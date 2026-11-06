@@ -346,6 +346,75 @@
         win.document.body.innerHTML = window.origin_paper_data[e].bib;
     }
 
+    const other_info_base_path = "notion_data/Benchmark datasets 64e0439269f9497799025562a4087ce1/"
+    const other_info_parallel_limit = 4
+    const other_info_promises = new Map()
+
+    function create_limited_queue(limit){
+        let active = 0
+        const queue = []
+
+        function run_next(){
+            if (active >= limit || queue.length == 0) return
+            const { task, resolve } = queue.shift()
+            active += 1
+            Promise.resolve()
+                .then(task)
+                .then(resolve)
+                .finally(() => {
+                    active -= 1
+                    run_next()
+                })
+        }
+
+        return function schedule(task){
+            return new Promise(resolve => {
+                queue.push({ task, resolve })
+                run_next()
+            })
+        }
+    }
+
+    const schedule_other_info_fetch = create_limited_queue(other_info_parallel_limit)
+
+    function get_other_info_key(entry){
+        if (entry["Name"] == undefined || entry["Page id"] == undefined) return ""
+        return entry["Name"].replace(".", "") + " " + entry["Page id"]
+    }
+
+    function queue_other_info_fetch(entry){
+        const key = get_other_info_key(entry)
+        if (key == "" || other_info_promises.has(key)) return
+
+        other_info_promises.set(
+            key,
+            schedule_other_info_fetch(async () => {
+                try{
+                    const response = await fetch(other_info_base_path + key + ".md")
+                    if (!response.ok) return ""
+                    const text = await response.text()
+                    return getTextAfterBody(text)
+                } catch (e){
+                    console.log(e)
+                    return ""
+                }
+            })
+        )
+    }
+
+    function preload_other_info(entries){
+        for (let entry of entries){
+            queue_other_info_fetch(entry)
+        }
+    }
+
+    async function get_other_info(entry){
+        const key = get_other_info_key(entry)
+        if (key == "") return ""
+        queue_other_info_fetch(entry)
+        return await other_info_promises.get(key)
+    }
+
     async function add_entry_row(named_list_dom, db_nav_list, paper_data, entry, origin_paper_data){
 
         //Fills the navs on the left sid        
@@ -473,14 +542,10 @@
         inforow.append("br")
 
         // DRAW REST OF THE PAGE
-        let otherinfo = ""
-        try{
-            let otherinfo = await fetch("notion_data/Benchmark datasets 64e0439269f9497799025562a4087ce1/" + entry["Name"].replace(".", "") + " " + entry["Page id"] + ".md")
-            otherinfo = await otherinfo.text()
+        let otherinfo = await get_other_info(entry)
+        if (otherinfo != ""){
             var converter = new showdown.Converter();
-            
-            otherinfo = getTextAfterBody(otherinfo);
-            
+
             for (let line of otherinfo.split("\n")){
                 if (line[0] == "!") {
                     // get everything after the first (, concat the rest
@@ -496,16 +561,12 @@
                     inforow.append("div")
                         .style("text-align", "center")
                         .append("img")
-                        .attr("src", "notion_data/Benchmark datasets 64e0439269f9497799025562a4087ce1/" + img)
+                        .attr("src", other_info_base_path + img)
                         .attr("width", "80%")
                 } else if (line.includes("STOP RENDERING")){
                      break;
                 } else inforow.append("div").html(converter.makeHtml(line))
-                
             }
-
-        } catch (e){
-            console.log(e)
         }
 
         inforow.append("br")
@@ -575,6 +636,7 @@
         let data = await d3.csv("notion_data/Benchmark_datasets.csv")
         let paper_data = await d3.csv("notion_data/Literature - Algorithm 12e01bfc60a84007aa7d2d34293e123d.csv")
         let origin_paper_data = await d3.csv("notion_data/Paper Sources cb3332bc548a49a4a4f1e085486f71f1.csv")
+        preload_other_info(data)
         window.origin_paper_data = origin_paper_data;
         let named_list_dom = d3.select("#named-list")
         let db_nav_list = d3.select("#db-nav-list");
